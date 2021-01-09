@@ -1,0 +1,10 @@
+dynaconf_merge: on
+default:
+  db:
+    name: qgbot
+    port: 5432
+  logger:
+    filename: qgbot.log
+development:
+  db:
+    host: localhost
