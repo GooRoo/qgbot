@@ -7,9 +7,7 @@ def handler(*args, admin_only=False):
         '''Adds is_admin keyword parameter do a decorated handler'''
         @functools.wraps(func)
         def wrapped(bot, update, *args, **kwargs):
-            # s = bot.db.session()
-
-            try:
+            with bot.db.session():
                 if update.effective_user:
                     user_id = update.effective_user.id
                     user = bot.db.find_user(user_id)
@@ -24,18 +22,16 @@ def handler(*args, admin_only=False):
 
                     kwargs['is_admin'] = is_admin
 
-                return func(bot, update, *args, **kwargs)
-            finally:
-                pass # bot.db.end_session()
+                handler_result = func(bot, update, *args, **kwargs)
+            return handler_result
         return wrapped
 
     def only_admin(func):
         '''Invokes the decorated handler only if the user is admin'''
         @functools.wraps(func)
         def wrapped(bot, update, *args, **kwargs):
-            # s = bot.db.session()
-
-            try:
+            handler_result = None
+            with bot.db.session():
                 if update.effective_user:
                     user_id = update.effective_user.id
                     user = bot.db.find_user(user_id)
@@ -49,9 +45,8 @@ def handler(*args, admin_only=False):
                     logger.info('User is admin' if is_admin else 'User is not admin')
 
                     if is_admin:
-                        return func(bot, update, *args, **kwargs)
-            finally:
-                pass #bot.db.end_session()
+                        handler_result = func(bot, update, *args, **kwargs)
+            return handler_result
         return wrapped
 
     if admin_only:

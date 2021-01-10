@@ -68,7 +68,7 @@ class DB(object):
         )
         s.add(new_user)
         s.commit()
-        logger.success('User has been added: {}', new_user)
+        logger.success(f'User has been added: {new_user}')
         return new_user
 
     def _get_or_add_user(self, id, first_name, last_name=None, username=None, is_admin=False):
@@ -101,32 +101,57 @@ class DB(object):
         s.commit()
 
     def get_categories(self):
-        with self.session() as s:
-            return {
-                tag: name
-                for tag, name in s.query(Category.tag, Category.name).order_by(Category.name)
-            }
+        s = self.start_session()
+        return {
+            tag: name
+            for tag, name in s.query(Category.tag, Category.name).order_by(Category.name)
+        }
 
-    def add_request(self, message_id, user, category_tag, text):
-        with self.session() as s:
-            u = self._get_or_add_user(user.id, user.first_name, user.last_name, user.username)
+    def add_request(self, request_id, user, category_tag, text):
+        s = self.start_session()
+        u = self._get_or_add_user(user.id, user.first_name, user.last_name, user.username)
 
-            request = Request(
-                id=message_id,
-                user_id=u.id,
-                category_tag=category_tag,
-                text=text
-            )
-            s.add(request)
-            s.commit()
-            logger.success('New request has been registered: {}', request)
+        request = Request(
+            id=request_id,
+            user_id=u.id,
+            category_tag=category_tag,
+            text=text
+        )
+        s.add(request)
+        s.commit()
+        logger.success(f'New request has been registered: {request}')
 
-    def add_vote(self, message_id, user, upvote):
-        with self.session() as s:
-            u = self._get_or_add_user(user.id, user.first_name, user.last_name, user.username)
+    def add_vote(self, request_id, user, upvote):
+        s = self.start_session()
+        u = self._get_or_add_user(user.id, user.first_name, user.last_name, user.username)
 
-            vote = Vote(
-                request_id=message_id,
-                user_id=u.id,
-                upvote=upvote
-            )
+        vote = Vote(
+            request_id=request_id,
+            user_id=u.id,
+            upvote=upvote
+        )
+        s.merge(vote)
+        s.commit()
+        logger.success(f'New vote has been registered: {vote}')
+
+    def get_request(self, id):
+        s = self.start_session()
+        return s.query(Request).filter(Request.id == id).one()
+
+    def has_voted(self, request_id, user, vote):
+        s = self.start_session()
+        return s.query(Vote).\
+            filter(Vote.request_id == request_id,
+                   Vote.user_id == user.id,
+                   Vote.upvote == vote).\
+            count() > 0
+
+    def revoke_vote(self, request_id, user):
+        s = self.start_session()
+        s.query(Vote).filter(Vote.request_id == request_id, Vote.user_id == user.id).delete()
+        s.commit()
+        logger.success(f'Vote on message "{request_id}" by the user "{user}" has been removed')
+
+    def get_votes(self, request_id):
+        s = self.start_session()
+        return s.query(Vote).filter(Vote.request_id == request_id).order_by(Vote.upvote)

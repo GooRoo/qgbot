@@ -1,17 +1,13 @@
+import itertools
 import sys
 from dynaconf import settings
-from enum import auto, Enum
-from uuid import uuid4
+from typing import List
 
 from telegram import          \
-    Bot,                      \
     InlineKeyboardButton,     \
     InlineKeyboardMarkup,     \
     InlineQueryResultArticle, \
-    InlineQueryResultPhoto,   \
-    InputMediaPhoto,          \
     InputTextMessageContent,  \
-    MessageEntity,            \
     ParseMode,                \
     Update
 from telegram.ext import       \
@@ -19,18 +15,17 @@ from telegram.ext import       \
     CallbackQueryHandler,      \
     ChosenInlineResultHandler, \
     CommandHandler,            \
-    ConversationHandler,       \
     InlineQueryHandler,        \
     MessageHandler,            \
     Updater
 from telegram.ext.filters import Filters
 from telegram.utils.helpers import escape_markdown
-from qg.bot.settings import SettingsConversation
 
-from qg.logger import logger
 from qg.db import DB
+from qg.logger import logger
 
 from .decorators import handler
+from .settings import SettingsConversation
 # from .handlers import ChoiceHandler
 
 logger.remove()
@@ -131,43 +126,93 @@ class QGBot(object):
 
         return self.SettingsStates.CHOICE
 
+    def _inline_keyboard(self, up=0, down=0):
+        up_title = f'✅ {up}' if up > 0 else '✅'
+        down_title = f'❌ {down}' if down > 0 else '❌'
+
+        keyboard = [[
+            InlineKeyboardButton(up_title, callback_data='up'),
+            InlineKeyboardButton(down_title, callback_data='down')
+        ]]
+        return InlineKeyboardMarkup(keyboard)
+
     def on_inline_query(self, update: Update, context: CallbackContext):
         query = update.inline_query.query
 
         if len(query) == 0:
             return
 
-        keyboard = [[
-            InlineKeyboardButton('✅', callback_data='up'),
-            InlineKeyboardButton('❌', callback_data='down')
-        ]]
-
-        results = [
-            InlineQueryResultArticle(
-                id=tag,
-                title=name,
-                description=f'#{tag}_request',
-                input_message_content=InputTextMessageContent(
-                    f'#{tag}_request {query}',
-
-                ),
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            for tag, name in self.db.get_categories().items()
-        ]
-
+        with self.db.session():
+            results = [
+                InlineQueryResultArticle(
+                    id=tag,
+                    title=name,
+                    description=f'#{tag}_request',
+                    input_message_content=InputTextMessageContent(f'#{tag}_request {query}'),
+                    reply_markup=self._inline_keyboard()
+                )
+                for tag, name in self.db.get_categories().items()
+            ]
         update.inline_query.answer(results)
 
     def on_chosen_inline_query(self, update: Update, context: CallbackContext):
         res = update.chosen_inline_result
-        logger.info('User {} has submitted a new request with id "{}" under "{}" category. The message: {}',
-                    res.from_user, res.inline_message_id, res.result_id, res.query)
-        self.db.add_request(message_id=res.inline_message_id, user=res.from_user, category_tag=res.result_id, text=res.query)
+        logger.info(f'User {res.from_user} has submitted a new request with id "{res.inline_message_id}" '
+                    f'under "{res.result_id}" category. The message: {res.query}')
+        self.db.add_request(request_id=res.inline_message_id, user=res.from_user, category_tag=res.result_id, text=res.query)
 
+    # @logger.catch
     def on_vote(self, update: Update, context: CallbackContext):
+        '''Handle press on a vote button (inline message button)'''
+
+        def group_votes(votes):
+            '''Partition all votes by the actual vote and collect the list of voters' usernames'''
+            all_votes = {}
+            for v, vs in itertools.groupby(votes, key=lambda v: v.upvote):
+                all_votes[v] = [v.user.username_or_name() for v in vs]
+            logger.debug(f'all_votes: {all_votes}')
+
+            upvotes = all_votes.get(True, [])
+            downvotes = all_votes.get(False, [])
+
+            logger.info(f'Upvotes: {upvotes}, downvotes: {downvotes}')
+
+            return upvotes, downvotes
+
+        def prepare_votes_string(upvotes: List[str], downvotes: List[str]) -> str:
+            '''Generate the string with the list of voters (to be appended to the message)'''
+            votes_string = ''
+            if len(upvotes) > 0:
+                votes_string += f'✅: {", ".join(upvotes)}\n'
+            if len(downvotes) > 0:
+                votes_string += f'❌: {", ".join(downvotes)}\n'
+            if len(votes_string) > 0:
+                votes_string = '\n\n**Votes:**\n' + escape_markdown(votes_string, version=2)
+            return votes_string
+
         query = update.callback_query
-        if query.data == 'up':
-            query.answer('+2')
-        else:
-            query.answer('-2')
-        logger.warning('inline message id {}', query.inline_message_id)
+        message_id = query.inline_message_id
+        user = query.from_user
+        is_upvote = query.data == 'up'
+
+        logger.debug(f'Inline message id {message_id}')
+
+        with self.db.session():
+            r = self.db.get_request(message_id)
+
+            already_voted = self.db.has_voted(message_id, user, is_upvote)
+            if not already_voted:
+                self.db.add_vote(r.id, user, is_upvote)
+                query.answer('Thanks for voting!')
+            else:
+                self.db.revoke_vote(r.id, user)
+                query.answer('You have taken you voice back.')
+
+            upvotes, downvotes = group_votes(self.db.get_votes(request_id=message_id))
+            votes_string = prepare_votes_string(upvotes, downvotes)
+
+            query.edit_message_text(
+                escape_markdown(f'#{r.category_tag}_request {r.text}', version=2) + votes_string,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=self._inline_keyboard(up=len(upvotes), down=len(downvotes))
+            )

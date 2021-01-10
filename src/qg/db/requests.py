@@ -12,6 +12,7 @@ class Request(Base):
     category_tag = Column(String(CATEGORY_TAG_MAX_LEN), ForeignKey('Categories.tag'))
     text = Column(String, nullable=False)
 
+    user = relationship('User', back_populates='requests')
     votes = relationship('Vote', back_populates='request',
                                  cascade='all, delete-orphan',
                                  passive_deletes=True)
