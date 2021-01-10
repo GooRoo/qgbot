@@ -37,7 +37,7 @@ logger.remove()
 logger.add(settings.LOGGER.filename, rotation='10 MB', compression='zip')
 logger.add(
     sys.stderr,
-    level='DEBUG',
+    level='INFO',
     colorize=True,
     backtrace=True,
     diagnose=True)
@@ -48,6 +48,12 @@ class QGBot(object):
         self._initDB()
 
         self.updater = Updater(token, use_context=True)
+        self.updater.bot.set_my_commands([
+            ('/start', 'Show welcome information'),
+            ('/help', 'Show the info on bot usage'),
+            ('/settings', 'Open settings menu'),
+            ('/cancel', 'Cancel the current operation')
+        ])
         self.dispatcher = self.updater.dispatcher
 
         self._register_handlers()
@@ -56,18 +62,22 @@ class QGBot(object):
         echo_user_handler = MessageHandler(Filters.forwarded, self.echo_user_id)
         self.dispatcher.add_handler(echo_user_handler)
 
+        # basic commands
         self.dispatcher.add_handler(CommandHandler('start', self.on_start))
         self.dispatcher.add_handler(CommandHandler('help', self.on_help))
 
+        # settings menu
         self.settings = SettingsConversation('settings')
         self.settings.register(self.dispatcher)
-        # self.dispatcher.add_handler(CommandHandler('settings', self.on_settings))
 
-        # self.dispatcher.add_handler(CallbackQueryHandler(self.button))
+        # inline mode
+        self.dispatcher.add_handler(InlineQueryHandler(self.on_inline_query))
+        self.dispatcher.add_handler(ChosenInlineResultHandler(self.on_chosen_inline_query))
 
-        # self.dispatcher.add_handler(InlineQueryHandler(self.inline_query))
-        # self.dispatcher.add_handler(ChosenInlineResultHandler(self.chosen_inline_query))
+        # voting buttons
+        self.dispatcher.add_handler(CallbackQueryHandler(self.on_vote))
 
+        # error handling
         self.dispatcher.add_error_handler(self.error)
 
     def run(self, websocket=True):
@@ -106,7 +116,8 @@ class QGBot(object):
         reply = (
             '*Available commands:\n\n*'
             '/start — General information about this bot\n'
-            '/help — This message\n')
+            '/help — This message\n'
+        )
         if is_admin:
             reply += '\n*Administration:*\n'
             reply += '/settings — Various settings for admins'
@@ -119,3 +130,44 @@ class QGBot(object):
         update.message.reply_markdown('Settings')
 
         return self.SettingsStates.CHOICE
+
+    def on_inline_query(self, update: Update, context: CallbackContext):
+        query = update.inline_query.query
+
+        if len(query) == 0:
+            return
+
+        keyboard = [[
+            InlineKeyboardButton('✅', callback_data='up'),
+            InlineKeyboardButton('❌', callback_data='down')
+        ]]
+
+        results = [
+            InlineQueryResultArticle(
+                id=tag,
+                title=name,
+                description=f'#{tag}_request',
+                input_message_content=InputTextMessageContent(
+                    f'#{tag}_request {query}',
+
+                ),
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            for tag, name in self.db.get_categories().items()
+        ]
+
+        update.inline_query.answer(results)
+
+    def on_chosen_inline_query(self, update: Update, context: CallbackContext):
+        res = update.chosen_inline_result
+        logger.info('User {} has submitted a new request with id "{}" under "{}" category. The message: {}',
+                    res.from_user, res.inline_message_id, res.result_id, res.query)
+        self.db.add_request(message_id=res.inline_message_id, user=res.from_user, category_tag=res.result_id, text=res.query)
+
+    def on_vote(self, update: Update, context: CallbackContext):
+        query = update.callback_query
+        if query.data == 'up':
+            query.answer('+2')
+        else:
+            query.answer('-2')
+        logger.warning('inline message id {}', query.inline_message_id)

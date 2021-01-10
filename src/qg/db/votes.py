@@ -7,13 +7,11 @@ from .common import Base
 class Vote(Base):
     __tablename__ = 'Votes'
 
-    id = Column(Integer, primary_key=True)
-    request_id = Column(Integer, ForeignKey('Requests.id'))
-    user_id = Column(Integer, ForeignKey('Users.id'))
+    request_id = Column(String(256), ForeignKey('Requests.id'), primary_key=True)
+    user_id = Column(Integer, ForeignKey('Users.id'), primary_key=True)
     upvote = Column(Boolean, nullable=False)
 
     request = relationship('Request', back_populates='votes')
 
     def __repr__(self):
-        return f'<Vote(id={self.id}, request_id={self.request_id}, user_id={self.user_id}, '\
-               f'upvote?={self.upvote})>'
+        return f'<Vote(request_id={self.request_id}, user_id={self.user_id}, upvote?={self.upvote})>'

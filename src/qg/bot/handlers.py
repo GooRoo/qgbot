@@ -20,7 +20,7 @@ class ChoiceHandler(MessageHandler):
 
         plain_choices = flatten(self.choices)
 
-        logger.info('Flattened list: {}', plain_choices)
+        logger.debug('Flattened list: {}', plain_choices)
 
         filter = Filters.regex(self._build_regex(plain_choices)) & ~Filters.command
 

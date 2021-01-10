@@ -12,10 +12,14 @@ def handler(*args, admin_only=False):
             try:
                 if update.effective_user:
                     user_id = update.effective_user.id
-                    user = bot.db.get_user(user_id)
-                    logger.success(f'User "{user} invoked command')
+                    user = bot.db.find_user(user_id)
+                    if user is None:
+                        logger.info('Unknown user with id={} has invoked the command', user_id)
+                        is_admin = False
+                    else:
+                        logger.info('User "{}" has invoked the command', user)
+                        is_admin = user.is_admin
 
-                    is_admin = user.is_admin
                     logger.info('User is admin' if is_admin else 'User is not admin')
 
                     kwargs['is_admin'] = is_admin
@@ -34,10 +38,14 @@ def handler(*args, admin_only=False):
             try:
                 if update.effective_user:
                     user_id = update.effective_user.id
-                    user = bot.db.get_user(user_id)
-                    logger.success(f'User "{user} invoked command')
+                    user = bot.db.find_user(user_id)
+                    if user is None:
+                        logger.info('Unknown user with id={} has invoked the command', user_id)
+                        is_admin = False
+                    else:
+                        logger.info('User "{}" has invoked the command', user)
+                        is_admin = user.is_admin
 
-                    is_admin = user.is_admin
                     logger.info('User is admin' if is_admin else 'User is not admin')
 
                     if is_admin:
