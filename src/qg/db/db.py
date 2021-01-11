@@ -57,7 +57,7 @@ class DB(object):
         s = self.start_session()
         return s.query(User).filter(User.id == user_id).one()
 
-    def _add_user(self, id, first_name, last_name=None, username=None, is_admin=False):
+    def add_user(self, id, first_name, last_name=None, username=None, is_admin=False):
         s = self.start_session()
         new_user = User(
             id=id,
@@ -66,7 +66,7 @@ class DB(object):
             username=username,
             is_admin=is_admin
         )
-        s.add(new_user)
+        s.merge(new_user)
         s.commit()
         logger.success(f'User has been added: {new_user}')
         return new_user
@@ -75,9 +75,9 @@ class DB(object):
         try:
             user = self._get_user(id)
             logger.info('User has been found')
-        except NoResultFound as e:
+        except NoResultFound:
             logger.warning('No such user has been found in the database. Adding…')
-            user = self._add_user(
+            user = self.add_user(
                 id=id,
                 first_name=first_name,
                 last_name=last_name,
@@ -90,6 +90,20 @@ class DB(object):
         s = self.start_session()
         return s.query(User).filter(User.id == user_id).one_or_none()
 
+    def find_user_by_username(self, username):
+        s = self.start_session()
+        return s.query(User).filter(User.username == username).one_or_none()
+
+    def get_admins(self):
+        s = self.start_session()
+        return s.query(User).filter(User.is_admin == True).order_by(User.first_name, User.username)
+
+    def remove_admin(self, user_id):
+        s = self.start_session()
+        admin_but_not_for_long = s.query(User).get(user_id)
+        admin_but_not_for_long.is_admin = False
+        s.commit()
+
     def add_category(self, tag, name):
         s = self.start_session()
         s.add(Category(tag=tag, name=name))
@@ -97,7 +111,8 @@ class DB(object):
 
     def remove_category(self, category_id):
         s = self.start_session()
-        s.query(Category).get(category_id).delete()
+        category = s.query(Category).get(category_id)
+        s.delete(category)
         s.commit()
 
     def get_categories(self):

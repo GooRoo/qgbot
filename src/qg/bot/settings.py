@@ -1,14 +1,95 @@
-from enum import auto, Enum
-from typing import Dict, List
+import re
 
-from telegram import Update, MessageEntity, ReplyKeyboardRemove
-from telegram.ext import CallbackContext, CommandHandler, ConversationHandler, Dispatcher, Handler, MessageHandler
+from telegram import MessageEntity, ReplyKeyboardRemove, Update
+from telegram.ext import CallbackContext, Dispatcher, MessageHandler
 from telegram.ext.filters import Filters
 
 from qg.logger import logger
-from qg.utils.helpers import escape_md, flatten
+from qg.utils.helpers import escape_md, mention_md
 
-from .menu import MenuHandler, Menu, MenuItem, MenuItemProxy, BackButton, CancelButton
+from .menu import BackButton, CancelButton, Menu, MenuConversationItem, MenuHandler, MenuItem, MenuItemProxy
+from .handlers import AddingConversationHandler
+
+
+class AddAdminConversation(AddingConversationHandler):
+    def __init__(self, bot):
+        self.bot = bot
+
+    def build_choice_handlers(self):
+        return [
+            MessageHandler(Filters.contact, self.add_from_contact),
+            MessageHandler(
+                Filters.entity(MessageEntity.MENTION) | Filters.entity(MessageEntity.TEXT_MENTION),
+                self.add_from_mention
+            )
+        ]
+
+    def welcome(self):
+        return escape_md('Choose the person by sending the contact or mentioning. Otherwise, /cancel the operation.')
+
+    def add_from_contact(self, update: Update, context: CallbackContext):
+        logger.critical('add_from_contact')
+        contact = update.message.contact
+
+        if contact.user_id is None:
+            update.message.reply_markdown_v2(
+                escape_md(
+                    'Sorry, the contact you’ve sent doesn’t appear to be a Telegram user. Stopping the operation.'
+                ),
+                reply_markup=ReplyKeyboardRemove()
+            )
+        else:
+            with self.bot.db.session():
+                self.bot.db.add_user(
+                    id=contact.user_id,
+                    first_name=contact.first_name,
+                    last_name=contact.last_name,
+                    is_admin=True
+                )
+            fullname = contact.first_name
+            if (lm := contact.last_name) is not None and lm != '':
+                fullname += f' {lm}'
+            update.message.reply_markdown_v2(
+                mention_md(contact.user_id, fullname) + escape_md(' is now admin of myself.'),
+                reply_markup=ReplyKeyboardRemove()
+            )
+
+        return self.States.STOPPING
+
+    def add_from_mention(self, update: Update, context: CallbackContext):
+        message = update.message
+        assert len(message.entities) > 0
+
+        mention = [
+            e for e in message.entities
+                if e.type in [MessageEntity.MENTION, MessageEntity.TEXT_MENTION
+        ]][0]
+
+        with self.bot.db.session():
+            if (u := mention.user) is not None:
+                user_id = u.id
+                user_name = u.username
+                self.bot.db.add_user(u.id, u.first_name, u.last_name, u.username, is_admin=True)
+            else:
+                user_name = update.message.parse_entity(mention)[1:]
+                user = self.bot.db.find_user_by_username(user_name)
+                if user is None:
+                    logger.critical(f'Can‘t get an id for a user with username "{user_name}"')
+                    update.message.reply_markdown_v2(
+                        escape_md('Sorry, can’t determine the user’s id.'),
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    return self.States.STOPPING
+
+                else:
+                    user_id = user.id
+                    self.bot.db.add_user(user_id, first_name=user_name, username=user_name, is_admin=True)
+
+        update.message.reply_markdown_v2(
+            mention_md(user_id, f'@{user_name}') + escape_md(' is now admin of myself.'),
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return self.States.STOPPING
 
 
 class SettingsMenu(object):
@@ -27,7 +108,7 @@ class SettingsMenu(object):
                         MenuItem('Add category… ', None),
                         Menu('Remove category', 'Which category do you want to remove?',
                         [
-                            MenuItemProxy(self.populate_categories, self.remove_category),
+                            MenuItemProxy(self.populate_categories),
                             [ CancelButton(), BackButton() ]
                         ])
                     ],
@@ -36,10 +117,10 @@ class SettingsMenu(object):
                 Menu('Admins', 'And what do you want to do here?',
                 [
                     [
-                        MenuItem('Promote to admin…', None),
+                        MenuConversationItem('Promote to admin…', AddAdminConversation(self.bot)),
                         Menu('Demote admin', 'Choose the victim!',
                         [
-                            MenuItemProxy(self.populate_admins, self.remove_admin),
+                            MenuItemProxy(self.populate_admins),
                             [ CancelButton(), BackButton() ]
                         ])
                     ],
@@ -59,134 +140,67 @@ class SettingsMenu(object):
             reply_markup=ReplyKeyboardRemove(),
             disable_web_page_preview=True
         )
+        return Menu.States.STOPPING
 
     def add_category(self):
         pass
 
-    def remove_category(self):
-        pass
+    def remove_category(self, update: Update, context: CallbackContext):
+        first_hashtag = update.message.entities[0]
+        if first_hashtag.type != MessageEntity.HASHTAG:
+            logger.error(f'Expected hashtag, but got {first_hashtag.type}')
+            return
+        hashtag = update.message.parse_entity(first_hashtag)
+        logger.debug(f'Parsed hashtag: {hashtag}')
+        tag = hashtag[1:]
+
+        with self.bot.db.session():
+            self.bot.db.remove_category(tag)
+
+        update.message.reply_markdown_v2(
+            escape_md(f'Removed {hashtag}.'),
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return Menu.States.STOPPING
 
     def populate_categories(self):
         return [
-            MenuItem(name, self.remove_admin)
-            for _, (name, _) in self.bot.db.get_categories().items()
+            MenuItem(f'#{tag}', self.remove_category, accept_all=True)
+            for tag in self.bot.db.get_categories()
         ]
 
-    def add_admin(self):
-        pass
+    def remove_admin(self, update: Update, context: CallbackContext):
+        if len(update.message.entities) > 0 and (mention := update.message.entities[0]).type == MessageEntity.MENTION:
+            user_name = update.message.parse_entity(mention)[1:]
+            with self.bot.db.session():
+                user = self.bot.db.find_user_by_username(user_name)
+                if user is None:
+                    logger.critical(f'User with username "{user_name}" hasn’t been found though it should be there')
+                    update.message.reply_markdown_v2(
+                        escape_md('Some weird error happened. Tell admins, please.'),
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+                    return Menu.States.STOPPING
 
-    def remove_admin(self):
-        pass
+                user_id = user.id
+            logger.debug(f'Parsed user "{user_name}" from mention: id={user_id}')
+        else:
+            match = re.match(r'(\d+) - (.+)', update.message.text)
+            user_id = int(match[1])
+            user_name = match[2]
+            logger.debug(f'Parsed user "{user_name}" from text: id={user_id}')
+
+        with self.bot.db.session():
+            self.bot.db.remove_admin(user_id)
+
+        update.message.reply_markdown_v2(
+            mention_md(user_id, user_name) + escape_md(' is not admin anymore.'),
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return Menu.States.STOPPING
 
     def populate_admins(self):
-        return []
-
-
-# class SettingsConversation(object):
-#     '''
-#     Handle /settings command
-#     '''
-
-#     class States(Enum):
-#         MAIN_MENU = auto()
-#         ADMINS = auto()
-#         CATEGORIES = auto()
-#         CONTACT = auto()
-
-#     def __init__(self, command='settings', dispatcher=None):
-#         self.command = command
-#         if dispatcher is not None:
-#             self.register(dispatcher)
-
-#     def register(self, dispatcher: Dispatcher):
-#         dispatcher.add_handler(self._build_conversation())
-
-#     def _build_entries(self) -> List[Handler]:
-#         return [
-#             CommandHandler(self.command, self.on_entry)
-#         ]
-
-#     def _build_fallbacks(self, sublevel=False) -> List[Handler]:
-#         handlers = [
-#             CommandHandler('cancel', self.on_cancel),
-#             MessageHandler(Filters.text(['Cancel']), self.on_cancel)
-#         ]
-#         if sublevel:
-#             handlers.append(MessageHandler(Filters.text(['Back'], self.on_back)))
-#         return handlers
-
-#     def _build_main_menu(self) -> Dict[int, Handler]:
-#         self.main_menu = ChoiceHandler([['Categories', 'Admins']], self.on_main_menu_choice)
-#         self.admins_menu = ChoiceHandler([['Add admin…', 'Remove admin…']], self.on_add_remove_admin)
-#         self.categories_menu = ChoiceHandler([['Add category…', 'Remove category…']], self.on_add_remove_category)
-
-#         return {
-#             self.States.MAIN_MENU: [
-#                 self.main_menu,
-#                 self.admins_menu,
-#                 self.categories_menu
-#             ],
-#             self.States.CATEGORIES: [],
-#             self.States.ADMINS: [],
-#             self.States.CONTACT: [
-#                 MessageHandler(Filters.contact, self.on_contact),
-#                 MessageHandler(
-#                     Filters.entity(MessageEntity.MENTION)
-#                     | Filters.entity(MessageEntity.TEXT_MENTION),
-#                     self.on_mention
-#                 )
-#             ]
-#         }
-
-#     def _build_conversation(self) -> ConversationHandler:
-#         return ConversationHandler(
-#             entry_points=self._build_entries(),
-#             fallbacks=self._build_fallbacks(),
-#             states=self._build_main_menu()
-#         )
-
-#     def on_entry(self, update: Update, context: CallbackContext):
-#         update.message.reply_markdown_v2(
-#             escape_md('What do you want to change?'),
-#             reply_markup=self.main_menu.reply_keyboard(
-#                 one_time_keyboard=True,
-#                 selective=True,
-#                 with_cancel=True
-#             )
-#         )
-#         return self.States.MAIN_MENU
-
-#     def on_main_menu_choice(self, update: Update, context: CallbackContext):
-#         submenu = self.admins_menu if update.message.text == 'Admins' else self.categories_menu
-#         update.message.reply_markdown_v2(
-#             escape_md('What’s next?'),
-#             reply_markup=submenu.reply_keyboard(with_back=True, with_cancel=True)
-#         )
-#         return self.States.MAIN_MENU
-
-#     def on_add_remove_category(self, update: Update, context: CallbackContext):
-#         return self.States.CATEGORIES
-
-#     def on_add_remove_admin(self, update: Update, context: CallbackContext):
-#         update.message.reply_markdown_v2(
-#             'Please, send me the contact of the person whom you would like to make an admin of myself',
-#             reply_markup=ReplyKeyboardRemove()
-#         )
-#         return self.States.CONTACT
-
-#     def on_contact(self, update: Update, context: CallbackContext):
-#         return
-
-#     def on_mention(self, update: Update, context: CallbackContext):
-#         return
-
-#     @logger.catch
-#     def on_cancel(self, update: Update, context: CallbackContext):
-#         update.message.reply_markdown_v2(
-#             escape_md('Cancelled.'),
-#             reply_markup=ReplyKeyboardRemove()
-#         )
-#         return ConversationHandler.END
-
-#     def on_back(self, update: Update, context: CallbackContext):
-#         pass
+        return [
+            MenuItem(user.username_or_id_and_name(), self.remove_admin, accept_all=True)
+            for user in self.bot.db.get_admins()
+        ]

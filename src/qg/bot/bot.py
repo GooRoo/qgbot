@@ -167,7 +167,7 @@ class QGBot(object):
             '''Partition all votes by the actual vote and collect the list of voters' usernames'''
             all_votes = {}
             for v, vs in itertools.groupby(votes, key=lambda v: v.upvote):
-                all_votes[v] = [v.user.username_or_name() for v in vs]
+                all_votes[v] = [v.user.mention_md() for v in vs]
             logger.debug(f'all_votes: {all_votes}')
 
             upvotes = all_votes.get(True, [])
@@ -185,7 +185,7 @@ class QGBot(object):
             if len(downvotes) > 0:
                 votes_string += f'❌: {", ".join(downvotes)}\n'
             if len(votes_string) > 0:
-                votes_string = '\n\n*Votes:*\n' + escape_markdown(votes_string, version=2)
+                votes_string = '\n\n*Votes:*\n' + votes_string
             return votes_string
 
         query = update.callback_query

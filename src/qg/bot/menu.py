@@ -1,8 +1,7 @@
 from abc import abstractmethod
 from enum import auto, Enum
 from os import replace
-from re import S
-from typing import Callable, Dict, List
+from typing import Callable, List
 
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import CallbackContext, CommandHandler, ConversationHandler, Dispatcher, MessageHandler
@@ -10,6 +9,11 @@ from telegram.ext.filters import Filters
 
 from qg.logger import logger
 from qg.utils.helpers import escape_md, flatten
+
+
+BACK_BUTTON_TEXT = '◂ Back'
+CANCEL_BUTTON_TEXT = '⎋ Cancel'
+MENU_SUFFIX = ' ▸'
 
 
 class BaseMenu(object):
@@ -56,18 +60,8 @@ class Menu(BaseMenu):
 
     def set_parent(self, parent):
         if parent is not None:
-            self.name += ' ▸'
+            self.name += MENU_SUFFIX
         return super().set_parent(parent)
-
-    # @logger.catch
-    # def _build_keyboard(self):
-    #     keyboard = [
-    #         flatten(child._build_keyboard() for child in row) for row in self.children
-    #     ]
-    #     logger.debug(f'Keyboard: {keyboard}')
-    #     return [
-    #         flatten(child._build_keyboard() for child in row) for row in self.children
-    #     ]
 
     def _build_child_keyboard(self):
         keyboard = []
@@ -81,9 +75,6 @@ class Menu(BaseMenu):
             if len(keyboard_row) > 0:
                 keyboard.append(keyboard_row)
         return keyboard
-        # return [
-        #     flatten(child._build_keyboard() for child in row) for row in self.children
-        # ]
 
     def on_cancel(self, update: Update, context: CallbackContext):
         update.message.reply_markdown_v2(
@@ -99,7 +90,6 @@ class Menu(BaseMenu):
         )
         return self.States.END
 
-    @logger.catch
     def on_enter(self, update: Update, context: CallbackContext):
         update.message.reply_markdown_v2(
             escape_md(self.question),
@@ -107,7 +97,6 @@ class Menu(BaseMenu):
         )
         return self.States.CHOICE
 
-    @logger.catch
     def _build_own_entry_point(self):
         if self.root():
             return [CommandHandler(self.name, self.on_enter)]
@@ -153,14 +142,22 @@ class Menu(BaseMenu):
             ]})>'''
 
 class MenuItem(BaseMenu):
-    def __init__(self, name: str, action_callback):
+    def __init__(self, name: str, action_callback, accept_all=False):
         assert name is not None and name != ''
         super().__init__(name)
         self.callback = action_callback
+        self.accept_all = accept_all
 
-    @logger.catch
     def _build_entry_points(self):
-        return [MessageHandler(Filters.text([self.name]), self.callback)]
+        logger.debug(f'MenuItem: {self.name}')
+        if self.accept_all:
+            filters = Filters.text & \
+                ~Filters.text(BACK_BUTTON_TEXT) & \
+                ~Filters.text(CANCEL_BUTTON_TEXT) & \
+                ~Filters.command
+        else:
+            filters = Filters.text([self.name])
+        return [MessageHandler(filters, self.callback)]
 
     def _build_fallbacks(self):
         return super()._build_fallbacks()
@@ -171,9 +168,34 @@ class MenuItem(BaseMenu):
     def __repr__(self):
         return f'<MenuItem(name={self.name})>'
 
+class MenuConversationItem(BaseMenu):
+    def __init__(self, name: str, conversation):
+        assert name is not None and name != ''
+        super().__init__(name=name)
+        self.conversation_builder = conversation
+        self.conversation_builder.set_name(self.name)
+
+    def on_cancel(self, update: Update, context: CallbackContext):
+        return self.parent.on_cancel(update, context)
+
+    def _build_entry_points(self):
+        return [
+            self.conversation_builder.build()
+        ]
+
+    def _build_fallbacks(self):
+        return super()._build_fallbacks()
+
+    def _build_states(self):
+        return super()._build_states()
+
+    def __repr__(self):
+        return f'<MenuConversationItem(name={self.name})>'
+
+
 class CancelButton(BaseMenu):
     def __init__(self):
-        super().__init__('⎋ Cancel')
+        super().__init__(CANCEL_BUTTON_TEXT)
 
     def _build_fallbacks(self):
         return [
@@ -192,7 +214,7 @@ class CancelButton(BaseMenu):
 
 class BackButton(BaseMenu):
     def __init__(self):
-        super().__init__('◂ Back')
+        super().__init__(BACK_BUTTON_TEXT)
 
     def _build_fallbacks(self):
         return [
@@ -210,16 +232,10 @@ class BackButton(BaseMenu):
         return f'<BackButton()>'
 
 class MenuItemProxy(BaseMenu):
-    def __init__(self, populate_callback: Callable[[], List[MenuItem]], action_callback):
-        super().__init__('asdfasdfasdf')
+    def __init__(self, populate_callback: Callable[[], List[MenuItem]], action_callback=None):
+        super().__init__()
         self.populate = populate_callback
         self.callback = action_callback
-
-    # def _build_keyboard(self):
-    #     return flatten(i._build_keyboard() for i in self.populate()) if self.populate is not None else []
-
-    # def _build_entry_points(self):
-    #     return flatten(i._build_entry_points() for i in self.populate()) if self.populate is not None else []
 
     def _build_entry_points(self):
         return super()._build_entry_points()
