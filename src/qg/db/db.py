@@ -103,8 +103,8 @@ class DB(object):
     def get_categories(self):
         s = self.start_session()
         return {
-            tag: name
-            for tag, name in s.query(Category.tag, Category.name).order_by(Category.name)
+            tag: (name, url)
+            for tag, name, url in s.query(Category.tag, Category.name, Category.url).order_by(Category.name)
         }
 
     def add_request(self, request_id, user, category_tag, text):

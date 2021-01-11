@@ -25,8 +25,7 @@ from qg.db import DB
 from qg.logger import logger
 
 from .decorators import handler
-from .settings import SettingsConversation
-# from .handlers import ChoiceHandler
+from .settings import SettingsMenu
 
 logger.remove()
 logger.add(settings.LOGGER.filename, rotation='10 MB', compression='zip')
@@ -62,8 +61,7 @@ class QGBot(object):
         self.dispatcher.add_handler(CommandHandler('help', self.on_help))
 
         # settings menu
-        self.settings = SettingsConversation('settings')
-        self.settings.register(self.dispatcher)
+        self.settings = SettingsMenu(self, self.dispatcher)
 
         # inline mode
         self.dispatcher.add_handler(InlineQueryHandler(self.on_inline_query))
@@ -151,7 +149,7 @@ class QGBot(object):
                     input_message_content=InputTextMessageContent(f'#{tag}_request {query}'),
                     reply_markup=self._inline_keyboard()
                 )
-                for tag, name in self.db.get_categories().items()
+                for tag, (name, _) in self.db.get_categories().items()
             ]
         update.inline_query.answer(results)
 
@@ -187,7 +185,7 @@ class QGBot(object):
             if len(downvotes) > 0:
                 votes_string += f'❌: {", ".join(downvotes)}\n'
             if len(votes_string) > 0:
-                votes_string = '\n\n**Votes:**\n' + escape_markdown(votes_string, version=2)
+                votes_string = '\n\n*Votes:*\n' + escape_markdown(votes_string, version=2)
             return votes_string
 
         query = update.callback_query

@@ -8,8 +8,9 @@ class Category(Base):
 
     tag = Column(String(CATEGORY_TAG_MAX_LEN), primary_key=True)
     name = Column(String(CATEGORY_NAME_MAX_LEN))
+    url = Column(String)
 
     requests = relationship('Request')
 
     def __repr__(self):
-        return f'<Category(tag={self.tag}, name={self.name})>'
+        return f'<Category(tag={self.tag}, name={self.name}, url={self.url})>'
