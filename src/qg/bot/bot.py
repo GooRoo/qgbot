@@ -1,31 +1,22 @@
 import itertools
 import sys
-from dynaconf import settings
 from typing import List
 
-from telegram import          \
-    InlineKeyboardButton,     \
-    InlineKeyboardMarkup,     \
-    InlineQueryResultArticle, \
-    InputTextMessageContent,  \
-    ParseMode,                \
-    Update
-from telegram.ext import       \
-    CallbackContext,           \
-    CallbackQueryHandler,      \
-    ChosenInlineResultHandler, \
-    CommandHandler,            \
-    InlineQueryHandler,        \
-    MessageHandler,            \
-    Updater
-from telegram.ext.filters import Filters
-from telegram.utils.helpers import escape_markdown
-
+from dynaconf import settings
 from qg.db import DB
 from qg.logger import logger
+from qg.utils.helpers import escape_md
+from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
+                      InlineQueryResultArticle, InputTextMessageContent,
+                      ParseMode, Update)
+from telegram.ext import (CallbackContext, CallbackQueryHandler,
+                          ChosenInlineResultHandler, CommandHandler,
+                          InlineQueryHandler, Updater)
+from telegram.utils.helpers import escape_markdown
 
 from .decorators import handler
 from .settings import SettingsMenu
+from .stats import StatisticsMenu
 
 logger.remove()
 logger.add(settings.LOGGER.filename, rotation='10 MB', compression='zip')
@@ -45,6 +36,7 @@ class QGBot(object):
         self.updater.bot.set_my_commands([
             ('/start', 'Show welcome information'),
             ('/help', 'Show the info on bot usage'),
+            ('/stats', 'Show various statistics'),
             ('/settings', 'Open settings menu'),
             ('/cancel', 'Cancel the current operation')
         ])
@@ -53,15 +45,15 @@ class QGBot(object):
         self._register_handlers()
 
     def _register_handlers(self):
-        echo_user_handler = MessageHandler(Filters.forwarded, self.echo_user_id)
-        self.dispatcher.add_handler(echo_user_handler)
-
         # basic commands
         self.dispatcher.add_handler(CommandHandler('start', self.on_start))
         self.dispatcher.add_handler(CommandHandler('help', self.on_help))
 
         # settings menu
         self.settings = SettingsMenu(self, self.dispatcher)
+
+        # statistics menu
+        self.stats = StatisticsMenu(self, self.dispatcher)
 
         # inline mode
         self.dispatcher.add_handler(InlineQueryHandler(self.on_inline_query))
@@ -95,34 +87,35 @@ class QGBot(object):
         """Log Errors caused by Updates."""
         logger.error(f'Update: "{update}" caused an error: "{context.error}"')
 
-    def echo_user_id(self, update: Update, context: CallbackContext):
-        update.message.reply_text(update.message.forward_from.id)
-
-    @handler
-    def on_start(self, update: Update, context: CallbackContext, is_admin):
+    def on_start(self, update: Update, context: CallbackContext):
         '''/start command. Shows general information'''
-        update.message.reply_markdown(f'Welcome!!! You are {"not " if not is_admin else ""}admin!')
+        update.message.reply_markdown_v2(
+            escape_md(
+                'Welcome! I’m the “quality gate” bot for voting. '
+                'Think of me as a kind of @like, but with adjustable categories.\n\n'
+                'Check /help for more information.'
+            )
+        )
 
     @handler
     def on_help(self, update: Update, context: CallbackContext, is_admin):
         '''/help command. Shows available commands, etc.'''
-        reply = (
-            '*Available commands:\n\n*'
-            '/start — General information about this bot\n'
+        reply = escape_md('The main usage is in the inline mode.\n\n')
+        reply += (
+            '*Available commands:\n*'
+            '/start — General information\n'
             '/help — This message\n'
         )
         if is_admin:
             reply += '\n*Administration:*\n'
             reply += '/settings — Various settings for admins'
 
-        update.message.reply_markdown(reply)
-
-    @handler(admin_only=True)
-    def on_settings(self, update: Update, context: CallbackContext):
-        settings
-        update.message.reply_markdown('Settings')
-
-        return self.SettingsStates.CHOICE
+        update.message.reply_markdown_v2(
+            reply,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('Try me inline', switch_inline_query_current_chat='')]
+            ])
+        )
 
     def _inline_keyboard(self, up=0, down=0):
         up_title = f'✅ {up}' if up > 0 else '✅'
@@ -159,7 +152,6 @@ class QGBot(object):
                     f'under "{res.result_id}" category. The message: {res.query}')
         self.db.add_request(request_id=res.inline_message_id, user=res.from_user, category_tag=res.result_id, text=res.query)
 
-    # @logger.catch
     def on_vote(self, update: Update, context: CallbackContext):
         '''Handle press on a vote button (inline message button)'''
 

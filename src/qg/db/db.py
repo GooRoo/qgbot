@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy.orm.exc import MultipleResultsFound, NoResultFound
 
@@ -104,9 +104,9 @@ class DB(object):
         admin_but_not_for_long.is_admin = False
         s.commit()
 
-    def add_category(self, tag, name):
+    def add_category(self, tag, name, url):
         s = self.start_session()
-        s.add(Category(tag=tag, name=name))
+        s.merge(Category(tag=tag, name=name, url=url))
         s.commit()
 
     def remove_category(self, category_id):
@@ -170,3 +170,31 @@ class DB(object):
     def get_votes(self, request_id):
         s = self.start_session()
         return s.query(Vote).filter(Vote.request_id == request_id).order_by(Vote.upvote)
+
+    def get_top_reviewers(self):
+        s = self.start_session()
+        votes = s.query(Vote.user_id, func.count('*').label('votes_count')).\
+            group_by(Vote.user_id).limit(5).subquery()
+        return s.query(User, votes.c.votes_count).\
+            join(votes, User.id == votes.c.user_id).\
+            order_by(votes.c.votes_count.desc(), User.username, User.first_name)
+
+    def get_top_committers(self):
+        s = self.start_session()
+        requests = s.query(Request.user_id, func.count('*').label('requests_count')).\
+            group_by(Request.user_id).limit(5).subquery()
+        return s.query(User, requests.c.requests_count).\
+            join(requests, User.id == requests.c.user_id).\
+            order_by(requests.c.requests_count.desc(), User.username, User.first_name)
+
+    def get_best_committers(self):
+        s = self.start_session()
+        votes = s.query(Vote.request_id, func.count('*').label('votes_count')).\
+            filter(Vote.upvote == True).\
+            group_by(Vote.request_id).subquery()
+        requests = s.query(Request.user_id, func.sum(votes.c.votes_count).label('votes_sum')).\
+            join(votes, Request.id == votes.c.request_id).\
+            group_by(Request.user_id).limit(5).subquery()
+        return s.query(User, requests.c.votes_sum).\
+            join(requests, User.id == requests.c.user_id).\
+            order_by(requests.c.votes_sum.desc(), User.username, User.first_name)

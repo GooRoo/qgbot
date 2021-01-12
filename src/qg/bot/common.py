@@ -1,0 +1,1 @@
+STOPPING = -42

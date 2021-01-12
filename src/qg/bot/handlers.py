@@ -1,21 +1,23 @@
 from abc import abstractmethod
-from enum import auto, Enum
+from enum import Enum, auto
 from typing import List
 
 import telegram.ext.handler as tgh
+from qg.utils.helpers import escape_md
 from telegram import ForceReply, ReplyKeyboardRemove, Update
-from telegram.ext import CallbackContext, CommandHandler, ConversationHandler, MessageHandler
+from telegram.ext import (CallbackContext, CommandHandler, ConversationHandler,
+                          MessageHandler)
 from telegram.ext.filters import Filters
 
-from qg.utils.helpers import escape_md
-
+from .common import STOPPING as cSTOPPING
+from .decorators import handler
 from .menu import Menu
 
 
-class AddingConversationHandler(object):
+class CancellableConversationBuilder(object):
     class States(Enum):
         CHOICE = auto()
-        STOPPING = auto()
+        STOPPING = cSTOPPING
 
     def __init__(self):
         self.name = None
@@ -27,9 +29,13 @@ class AddingConversationHandler(object):
         entry_points = [MessageHandler(Filters.text(self.name), self._on_start)]
         fallbacks = [CommandHandler('cancel', self._on_cancel)]
         states = {
-            self.States.CHOICE: self.build_choice_handlers()
+            self.States.CHOICE: self.build_entry_handlers()
         }
-        map_to_parent = { self.States.STOPPING: Menu.States.STOPPING }
+        states.update(self.build_additional_states())
+        map_to_parent = {
+            self.States.STOPPING: Menu.States.STOPPING,
+            cSTOPPING: Menu.States.STOPPING
+        }
         return ConversationHandler(
             entry_points=entry_points,
             fallbacks=fallbacks,
@@ -37,10 +43,11 @@ class AddingConversationHandler(object):
             map_to_parent=map_to_parent
         )
 
+    @handler(admin_only=True)
     def _on_start(self, update: Update, context: CallbackContext):
         update.message.reply_markdown_v2(
             self.welcome(),
-            reply_markup=ForceReply()
+            reply_markup=ForceReply(selective=True)
         )
         return self.States.CHOICE
 
@@ -56,5 +63,8 @@ class AddingConversationHandler(object):
         raise NotImplementedError
 
     @abstractmethod
-    def build_choice_handlers(self) -> List[tgh.Handler]:
+    def build_entry_handlers(self) -> List[tgh.Handler]:
         raise NotImplementedError
+
+    def build_additional_states(self):
+        return {}

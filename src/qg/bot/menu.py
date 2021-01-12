@@ -10,6 +10,8 @@ from telegram.ext.filters import Filters
 from qg.logger import logger
 from qg.utils.helpers import escape_md, flatten
 
+from .common import STOPPING as cSTOPPING
+
 
 BACK_BUTTON_TEXT = '◂ Back'
 CANCEL_BUTTON_TEXT = '⎋ Cancel'
@@ -46,9 +48,9 @@ class BaseMenu(object):
 
 class Menu(BaseMenu):
     class States(Enum):
+        STOPPING = cSTOPPING
         END = ConversationHandler.END
         CHOICE = auto()
-        STOPPING = auto()
 
     def __init__(self, name: str, question: str, children: List[List[BaseMenu]]):
         super().__init__(name)

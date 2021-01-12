@@ -1,5 +1,10 @@
 import functools
-from loguru import logger
+
+from qg.logger import logger
+from qg.utils.helpers import escape_md
+from telegram.replykeyboardremove import ReplyKeyboardRemove
+
+from .common import STOPPING as cSTOPPING
 
 
 def handler(*args, admin_only=False):
@@ -30,10 +35,10 @@ def handler(*args, admin_only=False):
         '''Invokes the decorated handler only if the user is admin'''
         @functools.wraps(func)
         def wrapped(bot, update, *args, **kwargs):
-            handler_result = None
-            with bot.db.session():
-                if update.effective_user:
-                    user_id = update.effective_user.id
+            handler_result = cSTOPPING
+            if update.effective_user:
+                user_id = update.effective_user.id
+                with bot.db.session():
                     user = bot.db.find_user(user_id)
                     if user is None:
                         logger.info('Unknown user with id={} has invoked the command', user_id)
@@ -42,10 +47,16 @@ def handler(*args, admin_only=False):
                         logger.info('User "{}" has invoked the command', user)
                         is_admin = user.is_admin
 
-                    logger.info('User is admin' if is_admin else 'User is not admin')
+                logger.info('User is admin' if is_admin else 'User is not admin')
 
-                    if is_admin:
-                        handler_result = func(bot, update, *args, **kwargs)
+                if is_admin:
+                    handler_result = func(bot, update, *args, **kwargs)
+                else:
+                    update.message.reply_markdown_v2(
+                        escape_md('Sorry, this function is available for admins only. Aborting.'),
+                        reply_markup=ReplyKeyboardRemove()
+                    )
+
             return handler_result
         return wrapped
 
