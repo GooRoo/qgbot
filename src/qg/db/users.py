@@ -1,9 +1,9 @@
+from qg.utils.helpers import mention_md
 from sqlalchemy import Boolean, Column, Integer, String
 from sqlalchemy.orm import relationship
 
-from qg.utils.helpers import mention_md
-
 from .common import Base
+
 
 class User(Base):
     __tablename__ = 'Users'
@@ -16,6 +16,7 @@ class User(Base):
 
     requests = relationship('Request', back_populates='user')
     votes = relationship('Vote', back_populates='user')
+    donations = relationship('Donation', back_populates='user')
 
     def __repr__(self):
         return f'<User(id={self.id}, first_name="{self.first_name}", last_name="{self.last_name}", ' \

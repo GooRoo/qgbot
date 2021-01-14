@@ -1,5 +1,6 @@
 import itertools
 import sys
+from pathlib import Path
 from typing import List
 
 from dynaconf import settings
@@ -8,10 +9,11 @@ from qg.logger import logger
 from qg.utils.helpers import escape_md
 from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
                       InlineQueryResultArticle, InputTextMessageContent,
-                      ParseMode, Update)
+                      LabeledPrice, ParseMode, Update)
 from telegram.ext import (CallbackContext, CallbackQueryHandler,
-                          ChosenInlineResultHandler, CommandHandler,
-                          InlineQueryHandler, Updater)
+                          ChosenInlineResultHandler, CommandHandler, Filters,
+                          InlineQueryHandler, MessageHandler,
+                          PreCheckoutQueryHandler, Updater)
 from telegram.utils.helpers import escape_markdown
 
 from .decorators import handler
@@ -38,7 +40,9 @@ class QGBot(object):
             ('/help', 'Show the info on bot usage'),
             ('/stats', 'Show various statistics'),
             ('/settings', 'Open settings menu'),
-            ('/cancel', 'Cancel the current operation')
+            ('/donate', 'Gift for author'),
+            ('/cancel', 'Cancel the current operation'),
+            ('/terms', 'Terms & Conditions')
         ])
         self.dispatcher = self.updater.dispatcher
 
@@ -55,12 +59,20 @@ class QGBot(object):
         # statistics menu
         self.stats = StatisticsMenu(self, self.dispatcher)
 
+        # donation
+        self.dispatcher.add_handler(CommandHandler('donate', self.on_donate))
+        self.dispatcher.add_handler(CommandHandler('terms', self.on_terms))
+        self.dispatcher.add_handler(CallbackQueryHandler(self.on_donate_amount, pattern=r'^(\d+|cancel)$'))
+        self.dispatcher.add_handler(CallbackQueryHandler(self.on_payment_provider, pattern=r'^((stripe|liqpay) (\d+)|cancel)$'))
+        self.dispatcher.add_handler(PreCheckoutQueryHandler(self.on_pre_checkout))
+        self.dispatcher.add_handler(MessageHandler(Filters.successful_payment, self.on_paid))
+
         # inline mode
         self.dispatcher.add_handler(InlineQueryHandler(self.on_inline_query))
         self.dispatcher.add_handler(ChosenInlineResultHandler(self.on_chosen_inline_query))
 
         # voting buttons
-        self.dispatcher.add_handler(CallbackQueryHandler(self.on_vote))
+        self.dispatcher.add_handler(CallbackQueryHandler(self.on_vote, pattern=r'^(up|down)$'))
 
         # error handling
         self.dispatcher.add_error_handler(self.error)
@@ -105,6 +117,8 @@ class QGBot(object):
             '*Available commands:\n*'
             '/start — General information\n'
             '/help — This message\n'
+            '/stats — Various statistics on bot’s users\n'
+            '/donate — Give the author of this bot some money\n'
         )
         if is_admin:
             reply += '\n*Administration:*\n'
@@ -206,3 +220,104 @@ class QGBot(object):
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=self._inline_keyboard(up=len(upvotes), down=len(downvotes))
             )
+
+    def on_terms(self, update: Update, context: CallbackContext):
+        with open(Path('../img/marcus.png'), 'rb') as f:
+            update.message.reply_photo(f, caption='NO REFUNDS!')
+
+    def on_donate(self, update: Update, context: CallbackContext):
+        response = escape_md(
+            'You are willing to donate me for supporting my great job, aren’t you? Awesome!\n\n'
+            'Now choose the amount. '
+        )
+        response += '*Only today:* '
+        response += escape_md('choose the ⭐️ option, get -10% discount and receive nothing in return!')
+        update.message.reply_markdown_v2(
+            response,
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton('10€', callback_data='10'),
+                    InlineKeyboardButton('25€', callback_data='25'),
+                    InlineKeyboardButton('50€', callback_data='50'),
+                    InlineKeyboardButton('100€', callback_data='100')
+                ],
+                [InlineKeyboardButton('⭐️ 500€ ⭐️', callback_data='500')],
+                [InlineKeyboardButton('Cancel', callback_data='cancel')]
+            ])
+        )
+
+    def on_donate_amount(self, update: Update, context: CallbackContext):
+        query = update.callback_query
+        data = query.data
+
+        if data == 'cancel':
+            query.delete_message()
+            return
+
+        price = data
+        price_text = f'~500€~ 450' if price == '500' else price
+        query.edit_message_text(
+            escape_md('You are willing to donate me for supporting my great job, aren’t you? Awesome!\n\n') +
+                f'You will pay {price_text}€' +
+                escape_md('. Which payment system would you prefer?'),
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton('Stripe 🇪🇺', callback_data=f'stripe {price}'),
+                    InlineKeyboardButton('LiqPay 🇺🇦', callback_data=f'liqpay {price}'),
+                ],
+                [InlineKeyboardButton('Cancel', callback_data='cancel')]
+            ])
+        )
+
+    @logger.catch
+    def on_payment_provider(self, update: Update, context: CallbackContext):
+        query = update.callback_query
+
+        if query.data == 'cancel':
+            query.delete_message()
+            return
+
+        provider, price = query.data.split(' ')
+
+        try:
+            price = int(price)
+            discount = -int(price * 0.1) if price == 500 else 0
+            prices = [LabeledPrice('Donation', price * 100)]
+            if discount != 0:
+                prices.append(LabeledPrice('Discount', discount * 100))
+            provider_token = settings.PAYMENT.liqpay_token if provider == 'liqpay' else settings.PAYMENT.stripe_token
+            context.bot.send_invoice(
+                chat_id=query.from_user.id,
+                title='A gift for the bot’s author',
+                description='Your support is appreciated!',
+                payload=f'{price}',
+                start_parameter='donate',
+                provider_token=provider_token,
+                currency='EUR',
+                prices=prices,
+                reply_to_message_id=query.message.message_id,
+                allow_sending_without_reply=True
+            )
+            if query.message.chat_id == settings.BOT.id:
+                query.answer('The invoice is created!')
+            else:
+                logger.critical(f'https://t.me/{context.bot.username}')
+                query.answer(
+                    'The invoice is sent to you in the private chat',
+                    show_alert=True,
+                    url=f'https://t.me/{context.bot.username}?start=invoice'
+                )
+            query.delete_message()
+        except ValueError:
+            query.delete_message()
+
+    def on_pre_checkout(self, update: Update, context: CallbackContext):
+        update.pre_checkout_query.answer(ok=True)
+
+    def on_paid(self, update: Update, context: CallbackContext):
+        payment = update.message.successful_payment
+        update.message.reply_markdown_v2(
+            '*Thanks*\n' +
+            escape_md(f'You have successfully donated me {payment.total_amount / 100}€')
+        )

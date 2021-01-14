@@ -1,8 +1,9 @@
-from sqlalchemy import Boolean, Column, Integer, String
+from sqlalchemy import Column, Integer, String
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql.schema import ForeignKey
 
-from .common import Base, CATEGORY_TAG_MAX_LEN
+from .common import CATEGORY_TAG_MAX_LEN, Base
+
 
 class Request(Base):
     __tablename__ = 'Requests'

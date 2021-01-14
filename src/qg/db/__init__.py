@@ -2,6 +2,7 @@ from .common import Base
 from .db import DB
 
 from .categories import Category
-from .users import User
+from .donations import Donation
 from .requests import Request
+from .users import User
 from .votes import Vote

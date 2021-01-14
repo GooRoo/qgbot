@@ -1,14 +1,14 @@
+from qg.logger import logger
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import scoped_session, sessionmaker
-from sqlalchemy.orm.exc import MultipleResultsFound, NoResultFound
+from sqlalchemy.orm.exc import NoResultFound
 
-from qg.logger import logger
-
-from .common import Base
 from .categories import Category
-from .users import User
+from .common import Base
 from .requests import Request
+from .users import User
 from .votes import Vote
+
 
 class DB(object):
     def __init__(self, user='', password='', db='', host='localhost', port=5432, *, full_uri='', echo=False):

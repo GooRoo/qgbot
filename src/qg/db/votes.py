@@ -4,6 +4,7 @@ from sqlalchemy.sql.schema import ForeignKey
 
 from .common import Base
 
+
 class Vote(Base):
     __tablename__ = 'Votes'
 
