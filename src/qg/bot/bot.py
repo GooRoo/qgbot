@@ -94,7 +94,7 @@ class QGBot(object):
             logger.info('Opening a websocket…')
             self.updater.start_webhook(
                 listen='0.0.0.0',
-                port=settings.BOT.port,
+                port=settings.BOT.ws_port,
                 url_path=settings.BOT.token
             )
             self.updater.bot.set_webhook(
@@ -106,7 +106,7 @@ class QGBot(object):
         self.updater.idle()
 
     def _initDB(self):
-        if uri := settings.DB.full_uri:
+        if uri := settings.DB.get('FULL_URI', None):
             self.db = DB(full_uri=uri, echo=True)
         else:
             self.db = DB(
