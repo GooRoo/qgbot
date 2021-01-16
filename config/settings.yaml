@@ -1,5 +1,8 @@
 dynaconf_merge: on
 default:
+  bot:
+    ws_port: 8443
+    ws_enabled: false
   db:
     name: qgbot
     port: 5432
@@ -8,3 +11,6 @@ default:
 development:
   db:
     host: localhost
+production:
+  bot:
+    ws_enabled: true

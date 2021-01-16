@@ -1,11 +1,15 @@
-from qg.utils.helpers import escape_md, mention_md
 from telegram import ReplyKeyboardRemove, Update
 from telegram.ext import CallbackContext, Dispatcher
+
+from qg.logger import logger
+from qg.utils.helpers import escape_md
 
 from .menu import CancelButton, Menu, MenuHandler, MenuItem
 
 
 class StatisticsMenu(object):
+    '''Menu which responds to /stats'''
+
     def __init__(self, bot, dispatcher: Dispatcher):
         self.bot = bot
         self.db = self.bot.db
@@ -27,6 +31,7 @@ class StatisticsMenu(object):
         ])
         return menu
 
+    @logger.catch
     def show_top_committers(self, update: Update, context: CallbackContext):
         response = 'Here are the people who make the biggest amount of proposals:\n'
         with self.db.session():
@@ -40,6 +45,7 @@ class StatisticsMenu(object):
         )
         return Menu.States.STOPPING
 
+    @logger.catch
     def show_top_reviewers(self, update: Update, context: CallbackContext):
         response = 'Here are the people who vote the most:\n'
         with self.db.session():
@@ -53,6 +59,7 @@ class StatisticsMenu(object):
         )
         return Menu.States.STOPPING
 
+    @logger.catch
     def show_best_committers(self, update: Update, context: CallbackContext):
         response = 'Here are the people whose proposals got the highest amount of upvotes in total:\n'
         with self.db.session():

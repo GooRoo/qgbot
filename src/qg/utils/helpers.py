@@ -1,10 +1,10 @@
 import itertools
-from typing import Any, List
+from typing import Any
 
 import telegram.utils.helpers
 
 
-def flatten(l: List[List[Any]]) -> List[Any]:
+def flatten(l: list[list[Any]]) -> list[Any]:
     return list(itertools.chain.from_iterable(l))
 
 def escape_md(text):

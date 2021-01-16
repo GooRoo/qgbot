@@ -1,13 +1,13 @@
 from abc import abstractmethod
 from enum import Enum, auto
-from typing import List
 
 import telegram.ext.handler as tgh
-from qg.utils.helpers import escape_md
 from telegram import ForceReply, ReplyKeyboardRemove, Update
 from telegram.ext import (CallbackContext, CommandHandler, ConversationHandler,
                           MessageHandler)
 from telegram.ext.filters import Filters
+
+from qg.utils.helpers import escape_md
 
 from .common import STOPPING as cSTOPPING
 from .decorators import handler
@@ -15,6 +15,11 @@ from .menu import Menu
 
 
 class CancellableConversationBuilder(object):
+    '''
+    This class simplifies the creation of `ConversationHandler`s just a little bit
+    by adding a Cancel button which is compatible with the `Menu`.
+    '''
+
     class States(Enum):
         CHOICE = auto()
         STOPPING = cSTOPPING
@@ -31,7 +36,7 @@ class CancellableConversationBuilder(object):
         states = {
             self.States.CHOICE: self.build_entry_handlers()
         }
-        states.update(self.build_additional_states())
+        states |= self.build_additional_states()
         map_to_parent = {
             self.States.STOPPING: Menu.States.STOPPING,
             cSTOPPING: Menu.States.STOPPING
@@ -63,7 +68,7 @@ class CancellableConversationBuilder(object):
         raise NotImplementedError
 
     @abstractmethod
-    def build_entry_handlers(self) -> List[tgh.Handler]:
+    def build_entry_handlers(self) -> list[tgh.Handler]:
         raise NotImplementedError
 
     def build_additional_states(self):

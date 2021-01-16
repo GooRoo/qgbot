@@ -1,8 +1,9 @@
 import functools
 
+from telegram.replykeyboardremove import ReplyKeyboardRemove
+
 from qg.logger import logger
 from qg.utils.helpers import escape_md
-from telegram.replykeyboardremove import ReplyKeyboardRemove
 
 from .common import STOPPING as cSTOPPING
 
@@ -17,13 +18,13 @@ def handler(*args, admin_only=False):
                     user_id = update.effective_user.id
                     user = bot.db.find_user(user_id)
                     if user is None:
-                        logger.info('Unknown user with id={} has invoked the command', user_id)
+                        logger.debug(f'Unknown user with id "{user_id}" has invoked the command.')
                         is_admin = False
                     else:
-                        logger.info('User "{}" has invoked the command', user)
+                        logger.debug(f'User "{user}" has invoked the command.')
                         is_admin = user.is_admin
 
-                    logger.info('User is admin' if is_admin else 'User is not admin')
+                    logger.info('User is admin.' if is_admin else 'User is not admin.')
 
                     kwargs['is_admin'] = is_admin
 
@@ -41,13 +42,13 @@ def handler(*args, admin_only=False):
                 with bot.db.session():
                     user = bot.db.find_user(user_id)
                     if user is None:
-                        logger.info('Unknown user with id={} has invoked the command', user_id)
+                        logger.debug(f'Unknown user with id "{user_id}" has invoked the command.')
                         is_admin = False
                     else:
-                        logger.info('User "{}" has invoked the command', user)
+                        logger.debug(f'User "{user}" has invoked the command.')
                         is_admin = user.is_admin
 
-                logger.info('User is admin' if is_admin else 'User is not admin')
+                logger.info('User is admin.' if is_admin else 'User is not admin.')
 
                 if is_admin:
                     handler_result = func(bot, update, *args, **kwargs)

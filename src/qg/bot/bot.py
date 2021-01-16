@@ -1,20 +1,23 @@
+import functools
 import itertools
+import re
 import sys
 from pathlib import Path
-from typing import List
 
 from dynaconf import settings
-from qg.db import DB
-from qg.logger import logger
-from qg.utils.helpers import escape_md
 from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
                       InlineQueryResultArticle, InputTextMessageContent,
                       LabeledPrice, ParseMode, Update)
+from telegram.error import Unauthorized
 from telegram.ext import (CallbackContext, CallbackQueryHandler,
                           ChosenInlineResultHandler, CommandHandler, Filters,
                           InlineQueryHandler, MessageHandler,
                           PreCheckoutQueryHandler, Updater)
-from telegram.utils.helpers import escape_markdown
+from telegram.utils.helpers import create_deep_linked_url
+
+from qg.db import DB
+from qg.logger import logger
+from qg.utils.helpers import escape_md, mention_md
 
 from .decorators import handler
 from .settings import SettingsMenu
@@ -49,6 +52,15 @@ class QGBot(object):
         self._register_handlers()
 
     def _register_handlers(self):
+        # custom entry points (have to be registered before regular /start)
+        invoice_filter = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', re.I)
+        self.dispatcher.add_handler(
+            CommandHandler('start', self.on_start_with_invoice, Filters.regex(invoice_filter), pass_args=True)
+        )
+        self.dispatcher.add_handler(
+            CommandHandler('start', self.on_start_to_donate, Filters.regex(r'donate-(\d+)'), pass_args=True)
+        )
+
         # basic commands
         self.dispatcher.add_handler(CommandHandler('start', self.on_start))
         self.dispatcher.add_handler(CommandHandler('help', self.on_help))
@@ -62,10 +74,10 @@ class QGBot(object):
         # donation
         self.dispatcher.add_handler(CommandHandler('donate', self.on_donate))
         self.dispatcher.add_handler(CommandHandler('terms', self.on_terms))
-        self.dispatcher.add_handler(CallbackQueryHandler(self.on_donate_amount, pattern=r'^(\d+|cancel)$'))
-        self.dispatcher.add_handler(CallbackQueryHandler(self.on_payment_provider, pattern=r'^((stripe|liqpay) (\d+)|cancel)$'))
+        self.dispatcher.add_handler(CallbackQueryHandler(self.on_invoice_request, pattern=r'^((stripe|liqpay) (\d+)|cancel)$'))
         self.dispatcher.add_handler(PreCheckoutQueryHandler(self.on_pre_checkout))
         self.dispatcher.add_handler(MessageHandler(Filters.successful_payment, self.on_paid))
+        self.dispatcher.add_handler(CommandHandler('donate_stats', self.on_donate_stats))
 
         # inline mode
         self.dispatcher.add_handler(InlineQueryHandler(self.on_inline_query))
@@ -79,28 +91,43 @@ class QGBot(object):
 
     def run(self, websocket=True):
         if websocket:
-            pass
+            logger.info('Opening a websocket…')
+            self.updater.start_webhook(
+                listen='0.0.0.0',
+                port=settings.BOT.port,
+                url_path=settings.BOT.token
+            )
+            self.updater.bot.set_webhook(
+                f'{settings.BOT.base_url}/{settings.BOT.token}'
+            )
         else:
+            logger.info('Starting polling…')
             self.updater.start_polling()
         self.updater.idle()
 
     def _initDB(self):
-        self.db = DB(
-            user=settings.DB.user,
-            password=settings.DB.password,
-            db=settings.DB.name,
-            host=settings.DB.host,
-            port=settings.DB.port,
-            echo=True
-        )
+        if uri := settings.DB.full_uri:
+            self.db = DB(full_uri=uri, echo=True)
+        else:
+            self.db = DB(
+                user=settings.DB.user,
+                password=settings.DB.password,
+                db=settings.DB.name,
+                host=settings.DB.host,
+                port=settings.DB.port,
+                echo=True
+            )
         self.db.create_all(settings.DB.admins, settings.DB.categories)
 
     def error(self, update, context):
-        """Log Errors caused by Updates."""
+        '''Fallback handler to log the errors caused by Updates.'''
         logger.error(f'Update: "{update}" caused an error: "{context.error}"')
 
+    @logger.catch
     def on_start(self, update: Update, context: CallbackContext):
-        '''/start command. Shows general information'''
+        '''
+        /start command. Shows general information
+        '''
         update.message.reply_markdown_v2(
             escape_md(
                 'Welcome! I’m the “quality gate” bot for voting. '
@@ -109,9 +136,12 @@ class QGBot(object):
             )
         )
 
+    @logger.catch
     @handler
     def on_help(self, update: Update, context: CallbackContext, is_admin):
-        '''/help command. Shows available commands, etc.'''
+        '''
+        /help command. Shows available commands, etc.
+        '''
         reply = escape_md('The main usage is in the inline mode.\n\n')
         reply += (
             '*Available commands:\n*'
@@ -131,7 +161,11 @@ class QGBot(object):
             ])
         )
 
+    @functools.lru_cache
     def _inline_keyboard(self, up=0, down=0):
+        '''
+        Build inline buttons with vote counters.
+        '''
         up_title = f'✅ {up}' if up > 0 else '✅'
         down_title = f'❌ {down}' if down > 0 else '❌'
 
@@ -141,10 +175,14 @@ class QGBot(object):
         ]]
         return InlineKeyboardMarkup(keyboard)
 
+    @logger.catch
     def on_inline_query(self, update: Update, context: CallbackContext):
+        '''
+        Suggest categories for the vote request.
+        '''
         query = update.inline_query.query
 
-        if len(query) == 0:
+        if not query:
             return
 
         with self.db.session():
@@ -158,16 +196,24 @@ class QGBot(object):
                 )
                 for tag, (name, _) in self.db.get_categories().items()
             ]
-        update.inline_query.answer(results)
+        update.inline_query.answer(results, cache_time=0)
 
+    @logger.catch
     def on_chosen_inline_query(self, update: Update, context: CallbackContext):
+        '''
+        Store the vote request to the database.
+        '''
         res = update.chosen_inline_result
         logger.info(f'User {res.from_user} has submitted a new request with id "{res.inline_message_id}" '
                     f'under "{res.result_id}" category. The message: {res.query}')
-        self.db.add_request(request_id=res.inline_message_id, user=res.from_user, category_tag=res.result_id, text=res.query)
+        with self.db.session():
+            self.db.add_request(request_id=res.inline_message_id, user=res.from_user, category_tag=res.result_id, text=res.query)
 
+    @logger.catch
     def on_vote(self, update: Update, context: CallbackContext):
-        '''Handle press on a vote button (inline message button)'''
+        '''
+        Handle press on a vote button (inline message button).
+        '''
 
         def group_votes(votes):
             '''Partition all votes by the actual vote and collect the list of voters' usernames'''
@@ -179,18 +225,18 @@ class QGBot(object):
             upvotes = all_votes.get(True, [])
             downvotes = all_votes.get(False, [])
 
-            logger.info(f'Upvotes: {upvotes}, downvotes: {downvotes}')
+            logger.info(f'{upvotes = }, {downvotes = }')
 
             return upvotes, downvotes
 
-        def prepare_votes_string(upvotes: List[str], downvotes: List[str]) -> str:
+        def prepare_votes_string(upvotes: list[str], downvotes: list[str]) -> str:
             '''Generate the string with the list of voters (to be appended to the message)'''
             votes_string = ''
-            if len(upvotes) > 0:
+            if upvotes:
                 votes_string += f'✅: {", ".join(upvotes)}\n'
-            if len(downvotes) > 0:
+            if downvotes:
                 votes_string += f'❌: {", ".join(downvotes)}\n'
-            if len(votes_string) > 0:
+            if votes_string:
                 votes_string = '\n\n*Votes:*\n' + votes_string
             return votes_string
 
@@ -203,6 +249,9 @@ class QGBot(object):
 
         with self.db.session():
             r = self.db.get_request(message_id)
+            if r is None:
+                logger.error(f'A request with id "{message_id}" is not found although it should exist.')
+                return
 
             already_voted = self.db.has_voted(message_id, user, is_upvote)
             if not already_voted:
@@ -216,16 +265,24 @@ class QGBot(object):
             votes_string = prepare_votes_string(upvotes, downvotes)
 
             query.edit_message_text(
-                escape_markdown(f'#{r.category_tag}_request {r.text}', version=2) + votes_string,
+                escape_md(f'#{r.category_tag}_request {r.text}') + votes_string,
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=self._inline_keyboard(up=len(upvotes), down=len(downvotes))
             )
 
+    @logger.catch
     def on_terms(self, update: Update, context: CallbackContext):
+        '''
+        /terms command. Sends the Terms & Conditions.
+        '''
         with open(Path('../img/marcus.png'), 'rb') as f:
             update.message.reply_photo(f, caption='NO REFUNDS!')
 
+    @logger.catch
     def on_donate(self, update: Update, context: CallbackContext):
+        '''
+        /donate command. Shows the price list with inline buttons.
+        '''
         response = escape_md(
             'You are willing to donate me for supporting my great job, aren’t you? Awesome!\n\n'
             'Now choose the amount. '
@@ -236,88 +293,226 @@ class QGBot(object):
             response,
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton('10€', callback_data='10'),
-                    InlineKeyboardButton('25€', callback_data='25'),
-                    InlineKeyboardButton('50€', callback_data='50'),
-                    InlineKeyboardButton('100€', callback_data='100')
+                    InlineKeyboardButton('10€', callback_data='stripe 10'),
+                    InlineKeyboardButton('25€', callback_data='stripe 25'),
+                    InlineKeyboardButton('50€', callback_data='stripe 50'),
+                    InlineKeyboardButton('100€', callback_data='stripe 100')
                 ],
-                [InlineKeyboardButton('⭐️ 500€ ⭐️', callback_data='500')],
+                [InlineKeyboardButton('⭐️ 500€ ⭐️', callback_data='stripe 500')],
                 [InlineKeyboardButton('Cancel', callback_data='cancel')]
             ])
         )
 
-    def on_donate_amount(self, update: Update, context: CallbackContext):
-        query = update.callback_query
-        data = query.data
+    @functools.lru_cache(maxsize=5)
+    def generate_prices(self, price):
+        '''
+        Calculate discount and make a list of `LabeledPrice`s
+        '''
+        discount = -int(price * 0.1) if price == 500 else 0
+        total = price + discount
 
-        if data == 'cancel':
+        prices = [LabeledPrice('Donation', price * 100)]
+        if discount != 0:
+            prices.append(LabeledPrice('Discount', discount * 100))
+
+        return prices, total
+
+    @functools.lru_cache(maxsize=5)
+    def generate_invoice(self, price, currency):
+        '''
+        Create invoice template without any payload.
+        '''
+        provider_token = settings.PAYMENT.stripe_token
+        prices, total = self.generate_prices(price)
+        return {
+            'title': 'A gift for the bot’s author',
+            'description': 'Your support is appreciated!',
+            'provider_token': provider_token,
+            'currency': currency,
+            'prices': prices,
+            'start_parameter': f'donate-{price}'
+        }, total
+
+    @logger.catch
+    def on_invoice_request(self, update: Update, context: CallbackContext):
+        '''
+        Create invoice after clicking the inline button in the price list.
+        The most common case for donation.
+        '''
+        query = update.callback_query
+
+        if (data := query.data) == 'cancel':
             query.delete_message()
             return
 
-        price = data
-        price_text = f'~500€~ 450' if price == '500' else price
-        query.edit_message_text(
-            escape_md('You are willing to donate me for supporting my great job, aren’t you? Awesome!\n\n') +
-                f'You will pay {price_text}€' +
-                escape_md('. Which payment system would you prefer?'),
-            parse_mode=ParseMode.MARKDOWN_V2,
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton('Stripe 🇪🇺', callback_data=f'stripe {price}'),
-                    InlineKeyboardButton('LiqPay 🇺🇦', callback_data=f'liqpay {price}'),
-                ],
-                [InlineKeyboardButton('Cancel', callback_data='cancel')]
-            ])
+        provider, price = data.split(' ')
+
+        currency = 'EUR'
+        try:
+            price = int(price)
+        except ValueError:
+            query.delete_message()
+            return
+
+        invoice_template, total = self.generate_invoice(price, currency)
+
+        user = update.effective_user
+        chat = update.effective_chat
+        with self.db.session():
+            invoice_id = self.db.create_invoice(
+                user=user,
+                price=price,
+                total=total,
+                currency=currency
+            )
+
+        try:
+            user.send_invoice(
+                payload=invoice_id,
+                **invoice_template
+            )
+        except Unauthorized:  # User has never communicated to the bot directly
+            query.answer(
+                'Check you private chat!',
+                url=create_deep_linked_url(context.bot.get_me().username, invoice_id)
+            )
+        else:
+            logger.debug(f'{chat.id = }')
+            logger.debug(f'{user.id = }')
+            if chat.id == user.id:
+                query.answer('The invoice is created!')
+            else:
+                query.answer('I’ve dropped you an invoice into the private chat.', show_alert=True)
+
+    @logger.catch
+    def on_start_with_invoice(self, update: Update, context: CallbackContext):
+        '''
+        /start command with deep-link (Invoice ID).
+        This situation occurs when a user hasn't allowed the bot to send messages in private chat yet,
+        but triggered the invoice creation in some group chat.
+        '''
+        if not context.args:
+            logger.warning('Got no payload while it was expected')
+            return
+
+        invoice_id = context.args[0]
+        with self.db.session():
+            invoice = self.db.get_invoice(invoice_id)
+
+        if invoice is None:
+            logger.error(f'The invoice "{invoice_id}" does not exist in the database!')
+            return
+
+        if invoice.user_id != update.effective_user.id:
+            logger.error(
+                f'The user does not match. The invoice was created for {invoice.user.username_or_name()} while '
+                f'while the current chat is with {update.effective_user.name}.'
+            )
+            return
+
+        invoice_template, total = self.generate_invoice(int(invoice.price), invoice.currency)
+        update.effective_user.send_invoice(
+            payload=invoice_id,
+            **invoice_template
         )
 
     @logger.catch
-    def on_payment_provider(self, update: Update, context: CallbackContext):
-        query = update.callback_query
-
-        if query.data == 'cancel':
-            query.delete_message()
+    def on_start_to_donate(self, update: Update, context: CallbackContext):
+        '''
+        /start command with deep-link (donation amount).
+        The rarest situation which occurs when someone has paid and then forwards the receipt to someone else.
+        For that person the receipt will look like an invoice. If that user then comes to the bot's private chat.
+        this method will be called.
+        '''
+        if not context.args:
+            logger.warning('Got no payload while it was expected')
             return
 
-        provider, price = query.data.split(' ')
+        logger.debug(f'{context.args = }')
 
+        _, price = context.args[0].split('-')
+
+        currency = 'EUR'
         try:
             price = int(price)
-            discount = -int(price * 0.1) if price == 500 else 0
-            prices = [LabeledPrice('Donation', price * 100)]
-            if discount != 0:
-                prices.append(LabeledPrice('Discount', discount * 100))
-            provider_token = settings.PAYMENT.liqpay_token if provider == 'liqpay' else settings.PAYMENT.stripe_token
-            context.bot.send_invoice(
-                chat_id=query.from_user.id,
-                title='A gift for the bot’s author',
-                description='Your support is appreciated!',
-                payload=f'{price}',
-                start_parameter='donate',
-                provider_token=provider_token,
-                currency='EUR',
-                prices=prices,
-                reply_to_message_id=query.message.message_id,
-                allow_sending_without_reply=True
-            )
-            if query.message.chat_id == settings.BOT.id:
-                query.answer('The invoice is created!')
-            else:
-                logger.critical(f'https://t.me/{context.bot.username}')
-                query.answer(
-                    'The invoice is sent to you in the private chat',
-                    show_alert=True,
-                    url=f'https://t.me/{context.bot.username}?start=invoice'
-                )
-            query.delete_message()
         except ValueError:
-            query.delete_message()
+            logger.exception(f'{price} can not be cast to int')
+            return
 
+        invoice_template, total = self.generate_invoice(price, currency)
+
+        user = update.effective_user
+        with self.db.session():
+            invoice_id = self.db.create_invoice(
+                user=user,
+                price=price,
+                total=total,
+                currency=currency
+            )
+
+        user.send_message(
+            'Welcome! I’m the “quality gate” bot for voting. '
+            'Think of me as a kind of @like, but with adjustable categories.\n\n'
+            'It seems that someone has shown you a way to donate me. Although I appreciate it a lot, '
+            'I still recommend to try me out first. Check /help for more information.'
+        )
+        user.send_message('Here is your invoice if you change your mind:')
+        user.send_invoice(
+            payload=invoice_id,
+            **invoice_template
+        )
+
+    @logger.catch
     def on_pre_checkout(self, update: Update, context: CallbackContext):
-        update.pre_checkout_query.answer(ok=True)
+        '''
+        Process the request from the payment provider.
+        '''
+        query = update.pre_checkout_query
+        invoice_id = query.invoice_payload
+        with self.db.session():
+            invoice = self.db.get_invoice(invoice_id)
+        if invoice and not invoice.is_paid():
+            query.answer(ok=True)
+        else:
+            logger.error(f'Got pre-checkout on non-existing invoice: {invoice_id}')
+            query.answer(ok=False, error_message='This invoice does not exist or was paid already')
 
+    @logger.catch
     def on_paid(self, update: Update, context: CallbackContext):
+        '''
+        The invoice is fulfilled. Need to store the data.
+        '''
         payment = update.message.successful_payment
+        with self.db.session():
+            self.db.update_invoice(
+                invoice_id=payment.invoice_payload,
+                tg_charge_id=payment.telegram_payment_charge_id,
+                provider_charge_id=payment.provider_payment_charge_id
+            )
+
         update.message.reply_markdown_v2(
             '*Thanks*\n' +
-            escape_md(f'You have successfully donated me {payment.total_amount / 100}€')
+            escape_md(f'You have successfully donated me {payment.total_amount / 100 :.2f}€')
         )
+        context.bot.send_message(
+            settings.BOT.owner,
+            mention_md(
+                update.message.from_user.id,
+                update.message.from_user.name
+            ) + escape_md(f' has just donated {payment.total_amount / 100 :.2f}€'),
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+
+    @logger.catch
+    def on_donate_stats(self, update: Update, context: CallbackContext):
+        '''
+        Print list of people and the donated total
+        '''
+        response = 'Here are the people who donated the most:\n'
+        with self.db.session():
+            response += '\n'.join(donators := [
+                f'{user.mention_md()} donated *{escape_md(f"{total:.2f}")}€*'
+                for user, total in self.db.get_donators()
+            ])
+        logger.info(f'{donators = }')
+        update.message.reply_markdown_v2(response)

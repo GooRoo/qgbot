@@ -34,6 +34,7 @@ class AddAdminConversation(CancellableConversationBuilder):
     def welcome(self):
         return escape_md('Choose the person by sending the contact or mentioning. Otherwise, /cancel the operation.')
 
+    @logger.catch
     @handler(admin_only=True)
     def add_from_contact(self, update: Update, context: CallbackContext):
         '''
@@ -68,6 +69,7 @@ class AddAdminConversation(CancellableConversationBuilder):
 
         return self.States.STOPPING
 
+    @logger.catch
     @handler(admin_only=True)
     def add_from_mention(self, update: Update, context: CallbackContext):
         '''
@@ -96,7 +98,7 @@ class AddAdminConversation(CancellableConversationBuilder):
                 user_name = message.parse_entity(mention)[1:]
                 user = self.db.find_user_by_username(user_name)
                 if user is None:
-                    logger.critical(f'Can‘t get an id for a user with username "{user_name}"')
+                    logger.error(f'Can‘t get an id for a user with username "{user_name}"')
                     message.reply_markdown_v2(
                         escape_md('Sorry, can’t determine the user’s id.'),
                         reply_markup=ReplyKeyboardRemove()
@@ -149,6 +151,7 @@ class AddCategoryConversation(CancellableConversationBuilder):
             'You can always stop the process with the /cancel command.'
         )
 
+    @logger.catch
     @handler(admin_only=True)
     def remember_tag(self, update: Update, context: CallbackContext):
         message = update.message
@@ -168,6 +171,7 @@ class AddCategoryConversation(CancellableConversationBuilder):
         )
         return 'NAME'
 
+    @logger.catch
     @handler(admin_only=True)
     def no_tag(self, update: Update, context: CallbackContext):
         self.max_error_count -= 1
@@ -183,6 +187,7 @@ class AddCategoryConversation(CancellableConversationBuilder):
             )
             return
 
+    @logger.catch
     @handler(admin_only=True)
     def skip_name(self, update: Update, context: CallbackContext):
         self.category_name = self.category_tag.capitalize()
@@ -195,6 +200,7 @@ class AddCategoryConversation(CancellableConversationBuilder):
         )
         return 'URL'
 
+    @logger.catch
     @handler(admin_only=True)
     def remember_name(self, update: Update, context: CallbackContext):
         self.category_name = update.message.text
@@ -204,6 +210,7 @@ class AddCategoryConversation(CancellableConversationBuilder):
         )
         return 'URL'
 
+    @logger.catch
     @handler(admin_only=True)
     def skip_url(self, update: Update, context: CallbackContext):
         self.category_url = ''
@@ -212,6 +219,7 @@ class AddCategoryConversation(CancellableConversationBuilder):
         )
         return self.save_category(update, context)
 
+    @logger.catch
     @handler(admin_only=True)
     def remember_url(self, update: Update, context: CallbackContext):
         message = update.message
@@ -222,6 +230,7 @@ class AddCategoryConversation(CancellableConversationBuilder):
         self.category_url = hyperlink.url if hyperlink.url is not None else message.parse_entity(hyperlink)
         return self.save_category(update, context)
 
+    @logger.catch
     @handler(admin_only=True)
     def save_category(self, update: Update, context: CallbackContext):
         with self.db.session():
@@ -237,6 +246,8 @@ class AddCategoryConversation(CancellableConversationBuilder):
 
 
 class SettingsMenu(object):
+    '''Hierarchical menu which responds to /settings'''
+
     def __init__(self, bot, dispatcher: Dispatcher):
         self.bot = bot
         self.db = self.bot.db
@@ -276,7 +287,9 @@ class SettingsMenu(object):
         ])
         return menu
 
+    @logger.catch
     def show_categories(self, update: Update, context: CallbackContext):
+        '''Print list of categories with the hashtag and URL'''
         response = ''
         with self.db.session():
             for tag, (name, url) in self.db.get_categories().items():
@@ -288,8 +301,12 @@ class SettingsMenu(object):
         )
         return Menu.States.STOPPING
 
+    @logger.catch
     @handler(admin_only=True)
     def remove_category(self, update: Update, context: CallbackContext):
+        '''
+        Remove the chosen category from the database. All previous links to it are replaced with NULL.
+        '''
         first_hashtag = update.message.entities[0]
         if first_hashtag.type != MessageEntity.HASHTAG:
             logger.error(f'Expected hashtag, but got {first_hashtag.type}')
@@ -313,15 +330,16 @@ class SettingsMenu(object):
             for tag in self.db.get_categories()
         ]
 
+    @logger.catch
     @handler(admin_only=True)
     def remove_admin(self, update: Update, context: CallbackContext):
-        if len(update.message.entities) > 0 and (mention := update.message.entities[0]).type == MessageEntity.MENTION:
-            user_name = update.message.parse_entity(mention)[1:]
+        if (message := update.message).entities and (mention := message.entities[0]).type == MessageEntity.MENTION:
+            user_name = message.parse_entity(mention)[1:]
             with self.db.session():
                 user = self.db.find_user_by_username(user_name)
                 if user is None:
-                    logger.critical(f'User with username "{user_name}" hasn’t been found though it should be there')
-                    update.message.reply_markdown_v2(
+                    logger.error(f'User with username "{user_name}" hasn’t been found though it should be there')
+                    message.reply_markdown_v2(
                         escape_md('Some weird error happened. Tell admins, please.'),
                         reply_markup=ReplyKeyboardRemove()
                     )
@@ -330,7 +348,7 @@ class SettingsMenu(object):
                 user_id = user.id
             logger.debug(f'Parsed user "{user_name}" from mention: id={user_id}')
         else:
-            match = re.match(r'(\d+) - (.+)', update.message.text)
+            match = re.match(r'(\d+) - (.+)', message.text)
             user_id = int(match[1])
             user_name = match[2]
             logger.debug(f'Parsed user "{user_name}" from text: id={user_id}')
@@ -338,7 +356,7 @@ class SettingsMenu(object):
         with self.db.session():
             self.db.remove_admin(user_id)
 
-        update.message.reply_markdown_v2(
+        message.reply_markdown_v2(
             mention_md(user_id, user_name) + escape_md(' is not admin anymore.'),
             reply_markup=ReplyKeyboardRemove()
         )
