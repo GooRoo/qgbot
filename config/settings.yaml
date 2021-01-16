@@ -8,9 +8,12 @@ default:
     port: 5432
   logger:
     filename: qgbot.log
+    console_level: INFO
 development:
   db:
     host: localhost
 production:
   bot:
     ws_enabled: true
+  logger:
+    console_level: DEBUG

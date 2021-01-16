@@ -27,7 +27,7 @@ logger.remove()
 logger.add(settings.LOGGER.filename, rotation='10 MB', compression='zip')
 logger.add(
     sys.stderr,
-    level='INFO',
+    level=settings.LOGGER.console_level,
     colorize=True,
     backtrace=True,
     diagnose=True)
